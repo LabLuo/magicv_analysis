@@ -277,7 +277,6 @@ class MultithreadingManager:
 class GeneralSimulationRunner:
     def __init__(self, mechanism: str = "ECE", num_simulations: int = 250, 
                  random_state: int = 60, total_cores: int = 8):
-        self.mechanism = mechanism
         self.num_simulations = num_simulations
         self.random_state = random_state
         self.total_cores = total_cores
@@ -297,14 +296,19 @@ class GeneralSimulationRunner:
         self.electrode_radius = 1.0
         self.num_cycles = 1
         
-        # Get the graph
-        text = self.mechanism
-        parser = SynthesisParser(text)
-        G = parser.parse()
-        parser.draw()
-        
-        # Insert intermediates, starting materials, and products
-        self.G_with_intermediates = insert_intermediates(G)
+        # Get the graph, using the appropriate file if the mechanism is a gml fil
+        if mechanism.endswith(".gml"):
+            self.mechanism = mechanism[:-4]
+            self.G_with_intermediates = nx.read_gml(mechanism)
+        else:
+            self.mechanism = mechanism
+            text = self.mechanism
+            parser = SynthesisParser(text)
+            G = parser.parse()
+            parser.draw()
+            
+            # Insert intermediates, starting materials, and products
+            self.G_with_intermediates = insert_intermediates(G)
 
         # Create the parameter map that matches the suggested mechanism
         self.base_param_map = generate_node_parameters(self.G_with_intermediates)
