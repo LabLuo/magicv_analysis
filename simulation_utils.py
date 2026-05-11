@@ -2261,8 +2261,18 @@ def run_ecsim_simulation(G, param_map, comsol_params=None, scan_rates=None):
         }
         return error_results
     
+import traceback as tb
+    
 def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=None):
     """Run ElectroKitty simulation and return dictionary of results for each scan rate"""
+    import json
+
+    with open('param_map.json', 'w') as fp:
+        json.dump(param_map, fp)
+
+    with open('comsol_params.json', 'w') as fp:
+        json.dump(comsol_params, fp)
+
     try:
         # Default parameters if not provided
         if comsol_params is None:
@@ -2276,7 +2286,6 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                 'startScanRate': 0.0001,  # V/s
                 'endScanRate': 100000.0,  # V/s  
                 'scanRateCount': 5,
-                'normalizeCurrent': True,
             }
 
         # Get the direction of the scan
@@ -2358,7 +2367,7 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                             else:  # reduction (default)
                                 mech_lines.append(f"E({n_e}): {r} = {p}")
 
-                            kinetic_constants.append([alpha, k0, E0])
+                            kinetic_constants.append([float(alpha), float(k0), float(E0)])
                     
                     elif params['type'] == 'C':
                         # Chemical reaction
@@ -2372,7 +2381,7 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                         reactant_str = "+".join(reactants)
                         product_str = "+".join(products)
                         mech_lines.append(f"C: {reactant_str} = {product_str}")
-                        kinetic_constants.append([kf, kb])
+                        kinetic_constants.append([float(kf), float(kb)])
                 
                 mechanism = "\n".join(mech_lines)
 
@@ -2397,7 +2406,7 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                             seen_species.add(sp)
 
                             # Pull the original initial concentration for that species
-                            init_conc = param_map[sp]['params']
+                            init_conc = float(param_map[sp]['params'])
                             initial_dissolved.append(init_conc)
 
                 # ElectroKitty setup
@@ -2411,10 +2420,10 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                 simulation = ElectroKitty(mechanism)
                 
                 # Unpack CV potentials
-                E_start = start_potential
-                E_v1    = vertex_potential_1
-                E_v2    = vertex_potential_2
-                E_end   = end_potential
+                E_start = float(start_potential)
+                E_v1    = float(vertex_potential_1)
+                E_v2    = float(vertex_potential_2)
+                E_end   = float(end_potential)
 
                 # Generate a single linear ramp
                 def ramp(Ei, Ef, scan_rate):
@@ -2452,6 +2461,8 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                 t = np.concatenate(t_segments)
                 E = np.concatenate(E_segments)
 
+                print(t)
+
                 simulation.set_data(E, np.zeros(len(E)), t) # Here we call the function and pass it our custom signal
                 
                 simulation.create_simulation(
@@ -2466,21 +2477,28 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                 
                 # Simulate first segment
                 simulation.simulate()
+
                 potential = np.array(simulation.E_generated)
                 current = np.array(simulation.current)
+
+                print(potential)
+                print(current)
                 
                 # Store results for this scan rate
                 if len(potential) >= 2 and len(current) >= 2:
                     # Store as lists (or numpy arrays) in the results dictionary
                     results[f"scan_rate_{scan_rate:.2e}_V_s"] = {
                         'scan_rate': scan_rate,
-                        'potential': potential.tolist() if hasattr(potential, 'tolist') else list(potential),
-                        'current': current.tolist() if hasattr(current, 'tolist') else list(current),
-                        'time': t.tolist() if hasattr(t, 'tolist') else list(t),
+                        'potential': potential.tolist(),
+                        'current': current.tolist(),
+                        'time': t.tolist(),
                         'electrode_area': electrode_area,
                         'electrode_radius_mm': electrode_radius_mm,
                         'num_cycles': num_cycles,
-                        'mechanism': mechanism
+                        'start_potential': start_potential,
+                        'vertex_potential_1': vertex_potential_1,
+                        'vertex_potential_2': vertex_potential_2,
+                        'end_potential': end_potential
                     }
                 
             except Exception as e:
@@ -2490,7 +2508,7 @@ def run_electrokitty_simulation(G, param_map, comsol_params=None, scan_rates=Non
                 # Store error information for this scan rate
                 results[f"scan_rate_{scan_rate:.2e}_V_s"] = {
                     'scan_rate': scan_rate,
-                    'error': str(e),
+                    'error': str(''.join(tb.format_exception(None, e, e.__traceback__))),
                     'potential': [],
                     'current': [],
                     'time': []
@@ -2539,7 +2557,6 @@ def run_digisim_simulation(G_with_intermediates, param_map, comsol_params=None, 
                 'startScanRate': 0.0001,
                 'endScanRate': 10000.0,
                 'scanRateCount': 9,
-                'normalizeCurrent': True,
             }
         
         # Get simulation parameters

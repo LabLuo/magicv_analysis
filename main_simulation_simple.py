@@ -4,7 +4,7 @@ import concurrent.futures
 import threading
 import time
 from typing import Dict, List, Any
-from copy import deepcopy
+import copy
 import os
 import json
 import pandas as pd
@@ -21,17 +21,14 @@ class GeneralSimulationRunner:
         
         # Core allocation
         self.digisim_workers = 1  # Serial only
-        # Leave 1 core for system, distribute remaining among parallel simulators
-        remaining_cores = total_cores - 1
-        self.parallel_workers = max(1, remaining_cores // 3)  # For ecsim, electrokitty, comsol each
+        # Leave 1 core for system, distribute remaining among simulators; they run one after the other, so the remainder can be given to each
+        self.parallel_workers = total_cores - 1
         
         print(f"Core allocation: DigiSim=1, Parallel simulators={self.parallel_workers} each")
         
         # Create executors
         self.digisim_executor = ThreadPoolExecutor(max_workers=self.digisim_workers)
-        self.ecsim_executor = ProcessPoolExecutor(max_workers=self.parallel_workers)
-        self.electrokitty_executor = ProcessPoolExecutor(max_workers=self.parallel_workers)
-        self.comsol_executor = ProcessPoolExecutor(max_workers=self.parallel_workers)
+        self.parallel_executor = ProcessPoolExecutor(max_workers=self.parallel_workers)
         
         # Simulation parameters
         self.scan_rates = np.logspace(-2, 2, 5).tolist()
@@ -73,7 +70,7 @@ class GeneralSimulationRunner:
         # Create directories
         for model_id in range(self.num_simulations):
             folder_name = f"model_{model_id:04d}"
-            os.makedirs(f"new/{self.mechanism}/{folder_name}", exist_ok=True)
+            os.makedirs(f"simulated_data/{self.mechanism}/{folder_name}", exist_ok=True)
             self.results[model_id] = {
                 'digisim': None,
                 'ecsim': None,
@@ -86,7 +83,6 @@ class GeneralSimulationRunner:
     def generate_all_param_maps(self):
         """Generate all parameter maps"""
         print(f"Generating {self.num_simulations} parameter maps...")
-        os.makedirs(self.mechanism, exist_ok=True)
         
         for model_id in range(self.num_simulations):
             random_state = self.random_state + model_id
@@ -101,7 +97,7 @@ class GeneralSimulationRunner:
     def _save_parameters(self, model_id: int, param_map: Dict):
         """Save parameters for a single model"""
         folder_name = self.results[model_id]['folder']
-        param_filename = f"new/{self.mechanism}/{folder_name}/model_{model_id:04d}_params.json"
+        param_filename = f"simulated_data/{self.mechanism}/{folder_name}/model_{model_id:04d}_params.json"
         
         with open(param_filename, 'w') as f:
             json_ready = convert_numpy_types(param_map)
@@ -112,6 +108,8 @@ class GeneralSimulationRunner:
         if results is None:
             print(f"Warning: No results for {simulator} model {model_id}")
             return
+        
+        print("Results:", results)
             
         folder_name = self.results[model_id]['folder']
         
@@ -126,7 +124,7 @@ class GeneralSimulationRunner:
                 
                 df = pd.DataFrame(df_data)
                 filename_scan_key = str(scan_key).replace('.', 'p').replace('+', '')
-                filename = f"new/{self.mechanism}/{folder_name}/model_{model_id:04d}_{simulator}_scan_{filename_scan_key}.csv"
+                filename = f"simulated_data/{self.mechanism}/{folder_name}/model_{model_id:04d}_{simulator}_scan_{filename_scan_key}.csv"
                 df.to_csv(filename, index=False)
         
         print(f"Saved {simulator} results for model {model_id}")
@@ -135,7 +133,7 @@ class GeneralSimulationRunner:
         """Handle errors from simulators"""
         print(f"Error in {simulator} for model {model_id}: {error}")
         folder_name = self.results[model_id]['folder']
-        error_filename = f"new/{self.mechanism}/{folder_name}/model_{model_id:04d}_{simulator}_error.txt"
+        error_filename = f"simulated_data/{self.mechanism}/{folder_name}/model_{model_id:04d}_{simulator}_error.txt"
         with open(error_filename, 'w') as f:
             f.write(f"Error in {simulator}: {error}\n")
         gc.collect()
@@ -152,10 +150,8 @@ class GeneralSimulationRunner:
             run_func: Function to call for each model
             max_workers: Max concurrent workers (if None, use executor's max_workers)
         """
-        print(f"\n{'='*60}")
         print(f"Running {simulator.upper()} for {len(model_ids)} models")
         print(f"Max workers: {max_workers or executor._max_workers}")
-        print(f"{'='*60}")
         
         futures = {}
         
@@ -200,7 +196,7 @@ class GeneralSimulationRunner:
             # Submit the task
             future = executor.submit(
                 run_func,
-                self.G_with_intermediates, param_map, None, comsol_params, self.scan_rates
+                self.G_with_intermediates, param_map, comsol_params, self.scan_rates
             )
             futures[future] = model_id
         
@@ -235,10 +231,8 @@ class GeneralSimulationRunner:
         model_ids = list(range(self.num_simulations))
         
         # Process each simulator type sequentially
-        # 1. DigiSim - serial only (one at a time)
-        print("\n" + "="*70)
-        print("PHASE 1: DIGISIM (Serial - one model at a time)")
-        print("="*70)
+        # DigiSim - one at a time
+        print("RUNNING DIGISIM")
         
         # For DigiSim, we need to run one at a time since it's serial
         for idx, model_id in enumerate(model_ids):
@@ -280,43 +274,33 @@ class GeneralSimulationRunner:
             # Run DigiSim (serial)
             try:
                 result = run_digisim_simulation(
-                    self.G_with_intermediates, param_map, None, comsol_params, self.scan_rates
+                    self.G_with_intermediates, param_map, comsol_params, self.scan_rates
                 )
                 self._save_simulator_results(model_id, 'digisim', result)
-                print(f"  ✓ DigiSim model {model_id} completed")
+                print(f"DigiSim model {model_id} completed")
             except Exception as e:
                 self._handle_simulator_error(model_id, 'digisim', str(e))
-                print(f"  ✗ DigiSim model {model_id} failed: {str(e)[:100]}")
+                print(f"DigiSim model {model_id} failed: {str(e)[:100]}")
         
-        # 2. Run ECSIM (parallel)
-        print("\n" + "="*70)
-        print(f"PHASE 2: ECSIM (Parallel with {self.parallel_workers} workers)")
-        print("="*70)
-        self._run_model_type('ecsim', self.ecsim_executor, model_ids, run_ecsim_simulation)
+        # Run ECSIM (parallel)
+        print(f"RUNNING ECSIM")
+        self._run_model_type('ecsim', self.parallel_executor, model_ids, run_ecsim_simulation)
         
-        # 3. Run Electrokitty (parallel)
-        print("\n" + "="*70)
-        print(f"PHASE 3: ELECTROKITTY (Parallel with {self.parallel_workers} workers)")
-        print("="*70)
-        self._run_model_type('electrokitty', self.electrokitty_executor, model_ids, run_electrokitty_simulation)
+        # Run Electrokitty (parallel)
+        print(f"RUNNING ELECTROKITTY")
+        self._run_model_type('electrokitty', self.digisim_executor, model_ids, run_electrokitty_simulation)
         
-        # 4. Run COMSOL (parallel)
-        print("\n" + "="*70)
-        print(f"PHASE 4: COMSOL (Parallel with {self.parallel_workers} workers)")
-        print("="*70)
-        self._run_model_type('comsol', self.comsol_executor, model_ids, run_comsol_simulation)
+        # Run COMSOL (parallel)
+        print(f"RUNNING COMSOL")
+        self._run_model_type('comsol', self.parallel_executor, model_ids, run_comsol_simulation)
         
-        print("\n" + "="*70)
         print("ALL SIMULATIONS COMPLETED!")
-        print("="*70)
     
     def shutdown(self):
         """Clean shutdown of all executors"""
         print("Shutting down executors...")
         self.digisim_executor.shutdown(wait=True)
-        self.ecsim_executor.shutdown(wait=True)
-        self.electrokitty_executor.shutdown(wait=True)
-        self.comsol_executor.shutdown(wait=True)
+        self.parallel_executor.shutdown(wait=True)
         print("All executors shut down")
 
 # Utility functions
